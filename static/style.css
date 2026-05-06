@@ -1,0 +1,398 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    min-height: 100vh;
+    font-family: "Didot", "Bodoni 72", "Times New Roman", "Microsoft YaHei", serif;
+    color: #1f2933;
+
+    /* 你的背景图路径如果已经能显示，就说明这里路径是对的 */
+    background:
+        linear-gradient(rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.16)),
+        url("beach-background.png");
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+}
+
+/* 页面整体居中 */
+.page-wrapper {
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 56px 28px;
+}
+
+/* 中央主卡片 */
+.main-card {
+    width: 100%;
+    max-width: 960px;
+    padding: 68px 76px;
+
+    background: rgba(255, 255, 255, 0.88);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+
+    border: 1px solid rgba(255, 255, 255, 0.65);
+    border-radius: 4px;
+
+    box-shadow:
+        0 30px 80px rgba(0, 0, 0, 0.28),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
+/* 顶部标题区 */
+.hero {
+    text-align: center;
+    margin-bottom: 52px;
+}
+
+.eyebrow {
+    font-size: 14px;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    color: #7a6a56;
+    margin-bottom: 18px;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+.hero h1 {
+    font-size: 60px;
+    font-weight: 400;
+    letter-spacing: 0.22em;
+    color: #111827;
+    margin-bottom: 20px;
+}
+
+.subtitle {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 19px;
+    letter-spacing: 0.08em;
+    line-height: 2;
+    color: #5f6b76;
+}
+
+/* 每个功能区 */
+.section-card {
+    padding: 42px 0;
+    border-top: 1px solid rgba(31, 41, 55, 0.14);
+}
+
+.section-card:last-child {
+    border-bottom: 1px solid rgba(31, 41, 55, 0.14);
+}
+
+.section-card h2 {
+    font-size: 29px;
+    font-weight: 400;
+    letter-spacing: 0.18em;
+    color: #111827;
+    margin-bottom: 16px;
+}
+
+.section-desc {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 18px;
+    letter-spacing: 0.06em;
+    line-height: 1.9;
+    color: #6b7280;
+    margin-bottom: 22px;
+}
+
+.upload-message {
+    min-height: 24px;
+    margin: -8px 0 18px 0;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 17px;
+    letter-spacing: 0.06em;
+    line-height: 1.7;
+    color: #374151;
+}
+
+/* 上传区域 */
+.uploaded-list {
+    margin: 4px 0 22px;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+.uploaded-list h3 {
+    margin-bottom: 10px;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: #374151;
+}
+
+.uploaded-list p {
+    font-size: 17px;
+    letter-spacing: 0.06em;
+    line-height: 1.8;
+    color: #6b7280;
+}
+
+.uploaded-list ul {
+    list-style: none;
+}
+
+.uploaded-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 0;
+    border-top: 1px solid rgba(17, 24, 39, 0.12);
+}
+
+.uploaded-list span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-size: 17px;
+    letter-spacing: 0.04em;
+    color: #4b5563;
+}
+
+.uploaded-list .current-pdf {
+    font-weight: 600;
+    color: #111827;
+}
+
+.uploaded-list .current-doc-status {
+    margin-bottom: 10px;
+}
+
+.file-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 8px;
+}
+
+.select-pdf-btn {
+    flex: 0 0 auto;
+    padding: 8px 14px;
+    border: 1px solid rgba(17, 24, 39, 0.45);
+    background: transparent;
+    color: #111827;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    cursor: pointer;
+    transition: all 0.25s ease;
+}
+
+.select-pdf-btn:hover {
+    background: #111827;
+    color: #ffffff;
+}
+
+.delete-pdf-btn {
+    flex: 0 0 auto;
+    padding: 8px 14px;
+    border: 1px solid rgba(17, 24, 39, 0.22);
+    background: transparent;
+    color: #6b7280;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    cursor: pointer;
+    transition: all 0.25s ease;
+}
+
+.delete-pdf-btn:hover {
+    border-color: rgba(17, 24, 39, 0.45);
+    color: #111827;
+}
+
+.upload-box {
+    display: block;
+    width: 100%;
+    padding: 30px 28px;
+    margin-bottom: 18px;
+
+    border: 1px solid rgba(17, 24, 39, 0.22);
+    background: rgba(255, 255, 255, 0.55);
+
+    cursor: pointer;
+    transition: all 0.25s ease;
+}
+
+.upload-box:hover {
+    background: rgba(255, 255, 255, 0.85);
+    border-color: #111827;
+}
+
+.upload-box span {
+    display: block;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: #111827;
+    margin-bottom: 8px;
+}
+
+.upload-box small {
+    display: block;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 16px;
+    letter-spacing: 0.06em;
+    color: #7b8794;
+}
+
+/* 文件选择按钮单独留出距离 */
+input[type="file"] {
+    display: none;
+}
+
+/* 问题输入框 */
+.field-label {
+    display: block;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: #374151;
+    margin-bottom: 12px;
+}
+
+input[type="text"] {
+    width: 100%;
+    padding: 18px 20px;
+    margin-bottom: 28px;
+
+    border: none;
+    border-bottom: 1px solid rgba(17, 24, 39, 0.28);
+    background: rgba(255, 255, 255, 0.42);
+
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 19px;
+    letter-spacing: 0.06em;
+    color: #111827;
+
+    outline: none;
+    transition: all 0.25s ease;
+}
+
+input[type="text"]:focus {
+    background: rgba(255, 255, 255, 0.8);
+    border-bottom-color: #111827;
+}
+
+input[type="text"]::placeholder {
+    color: #9ca3af;
+}
+
+.primary-btn,
+.secondary-btn {
+    display: inline-block;
+    min-width: 170px;
+    padding: 16px 30px;
+    margin-top: 4px;
+
+    border: 1px solid #111827;
+    background: transparent;
+    color: #111827;
+
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+
+    cursor: pointer;
+    transition: all 0.25s ease;
+}
+
+.primary-btn:hover,
+.secondary-btn:hover {
+    background: #111827;
+    color: #ffffff;
+}
+
+/* 第二个按钮和第一个保持同样风格 */
+.secondary-btn {
+    margin-top: 0;
+}
+
+/* 结果区域 */
+.result-section {
+    padding-bottom: 0;
+}
+
+.result-box {
+    min-height: 150px;
+    padding: 28px;
+    background: rgba(255, 255, 255, 0.5);
+    border: 1px solid rgba(17, 24, 39, 0.16);
+}
+
+.result-box {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 18px;
+    letter-spacing: 0.06em;
+    line-height: 2;
+    color: #4b5563;
+    word-break: break-word;
+}
+
+.result-box h2 {
+    margin: 18px 0 8px;
+    font-size: 24px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: #111827;
+}
+
+.result-box h2:first-child {
+    margin-top: 0;
+}
+
+.result-box p,
+.result-box ul,
+.result-box ol {
+    margin-bottom: 12px;
+}
+
+.result-box ul,
+.result-box ol {
+    padding-left: 22px;
+}
+
+.result-box strong {
+    color: #111827;
+}
+
+/* 手机屏幕适配 */
+@media (max-width: 760px) {
+    .page-wrapper {
+        padding: 68px 18px;
+    }
+
+    .main-card {
+        padding: 68px 76px;
+    }
+
+    .hero h1 {
+        font-size: 40px;
+        letter-spacing: 0.14em;
+    }
+
+    .subtitle {
+        font-size: 17px;
+    }
+
+    .section-card h2 {
+        font-size: 24px;
+    }
+
+    .primary-btn,
+    .secondary-btn {
+        width: 100%;
+        margin-top: 8px;
+    }
+}
