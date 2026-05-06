@@ -1,9 +1,10 @@
 import os
 import re
+import uuid
+from datetime import datetime
 from html import escape
 
 from flask import Flask, render_template, request, session
-from werkzeug.utils import secure_filename
 
 try:
     from dotenv import load_dotenv
@@ -36,6 +37,12 @@ if load_dotenv:
 
 def is_pdf(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() == "pdf"
+
+
+def make_saved_pdf_filename():
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    short_id = uuid.uuid4().hex[:8]
+    return f"{timestamp}_{short_id}.pdf"
 
 
 def read_pdf_text(file_path):
@@ -439,6 +446,9 @@ def get_current_pdf_text():
     if not file_path:
         return None, "\u8bf7\u5148\u4e0a\u4f20\u6216\u9009\u62e9 PDF \u6587\u4ef6\u3002"
 
+    if not is_pdf(os.path.basename(file_path)):
+        return None, "\u5f53\u524d\u6587\u4ef6\u4e0d\u662f\u6709\u6548\u7684 PDF\uff0c\u8bf7\u91cd\u65b0\u4e0a\u4f20\u6216\u9009\u62e9 PDF\u3002"
+
     if not os.path.exists(file_path):
         return None, "\u627e\u4e0d\u5230\u5df2\u4e0a\u4f20\u7684 PDF \u6587\u4ef6\uff0c\u8bf7\u91cd\u65b0\u4e0a\u4f20\u3002"
 
@@ -481,6 +491,7 @@ def index():
                 if session.get("current_pdf_name") == delete_pdf:
                     session.pop("current_pdf_name", None)
                     session.pop("current_pdf_path", None)
+                    session.pop("original_filename", None)
 
         elif selected_pdf:
             safe_path = get_safe_pdf_path(selected_pdf)
@@ -499,11 +510,13 @@ def index():
                 upload_message = "\u53ea\u652f\u6301\u4e0a\u4f20 PDF \u6587\u4ef6"
             else:
                 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
-                filename = secure_filename(pdf_file.filename)
+                original_filename = os.path.basename(pdf_file.filename)
+                filename = make_saved_pdf_filename()
                 save_path = os.path.join(get_upload_folder(), filename)
                 pdf_file.save(save_path)
                 session["current_pdf_name"] = filename
                 session["current_pdf_path"] = save_path
+                session["original_filename"] = original_filename
                 upload_message = f"PDF \u4e0a\u4f20\u6210\u529f\uff1a{filename}"
 
         elif action == "summary":
