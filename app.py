@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import uuid
@@ -45,6 +46,44 @@ def make_saved_pdf_filename():
     return f"{timestamp}_{short_id}.pdf"
 
 
+def get_file_index_path():
+    return os.path.join(get_upload_folder(), "file_index.json")
+
+
+def load_file_index():
+    index_path = get_file_index_path()
+
+    if not os.path.isfile(index_path):
+        return {}
+
+    try:
+        with open(index_path, "r", encoding="utf-8") as index_file:
+            data = json.load(index_file)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    return data
+
+
+def save_file_index(file_index):
+    os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+
+    with open(get_file_index_path(), "w", encoding="utf-8") as index_file:
+        json.dump(file_index, index_file, ensure_ascii=False, indent=2)
+
+
+def get_original_filename(stored_filename):
+    file_info = load_file_index().get(stored_filename, {})
+
+    if not isinstance(file_info, dict):
+        return stored_filename
+
+    return file_info.get("original_filename") or stored_filename
+
+
 def read_pdf_text(file_path):
     if PdfReader is None:
         return None, "\u7f3a\u5c11\u4f9d\u8d56 pypdf\uff0c\u8bf7\u5148\u8fd0\u884c\uff1apip install pypdf"
@@ -78,13 +117,25 @@ def get_uploaded_files():
     if not os.path.isdir(upload_folder):
         return []
 
+    file_index = load_file_index()
     pdf_files = []
     for filename in os.listdir(upload_folder):
         file_path = os.path.join(upload_folder, filename)
         if os.path.isfile(file_path) and is_pdf(filename):
-            pdf_files.append(filename)
+            file_info = file_index.get(filename, {})
+            original_filename = ""
 
-    return sorted(pdf_files, key=str.lower)
+            if isinstance(file_info, dict):
+                original_filename = file_info.get("original_filename", "")
+
+            pdf_files.append(
+                {
+                    "stored_filename": filename,
+                    "display_filename": original_filename or filename,
+                }
+            )
+
+    return sorted(pdf_files, key=lambda item: item["display_filename"].lower())
 
 
 def get_safe_pdf_path(filename):
@@ -441,7 +492,8 @@ def answer_question(pdf_text, question):
 
 
 def get_current_pdf_text():
-    file_path = session.get("current_pdf_path")
+    stored_filename = session.get("current_pdf_stored_filename")
+    file_path = get_safe_pdf_path(stored_filename) if stored_filename else session.get("current_pdf_path")
 
     if not file_path:
         return None, "\u8bf7\u5148\u4e0a\u4f20\u6216\u9009\u62e9 PDF \u6587\u4ef6\u3002"
@@ -449,10 +501,16 @@ def get_current_pdf_text():
     if not is_pdf(os.path.basename(file_path)):
         return None, "\u5f53\u524d\u6587\u4ef6\u4e0d\u662f\u6709\u6548\u7684 PDF\uff0c\u8bf7\u91cd\u65b0\u4e0a\u4f20\u6216\u9009\u62e9 PDF\u3002"
 
-    if not os.path.exists(file_path):
+    upload_folder = get_upload_folder()
+    safe_file_path = os.path.abspath(file_path)
+    if os.path.commonpath([upload_folder, safe_file_path]) != upload_folder:
+        return None, "\u5f53\u524d PDF \u8def\u5f84\u4e0d\u5408\u6cd5\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9 PDF\u3002"
+
+    if not os.path.exists(safe_file_path):
         return None, "\u627e\u4e0d\u5230\u5df2\u4e0a\u4f20\u7684 PDF \u6587\u4ef6\uff0c\u8bf7\u91cd\u65b0\u4e0a\u4f20\u3002"
 
-    return read_pdf_text(file_path)
+    session["current_pdf_path"] = safe_file_path
+    return read_pdf_text(safe_file_path)
 
 
 def render_result_html(result):
@@ -485,12 +543,22 @@ def index():
             if not safe_path:
                 upload_message = "\u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u5df2\u88ab\u5220\u9664\u3002"
             else:
+                display_filename = get_original_filename(delete_pdf)
                 os.remove(safe_path)
-                upload_message = f"\u5df2\u5220\u9664\u6587\u4ef6\uff1a{delete_pdf}"
+                file_index = load_file_index()
+                file_index.pop(delete_pdf, None)
+                save_file_index(file_index)
+                upload_message = f"\u5df2\u5220\u9664\u6587\u4ef6\uff1a{display_filename}"
 
-                if session.get("current_pdf_name") == delete_pdf:
+                current_path_name = os.path.basename(session.get("current_pdf_path", ""))
+                if (
+                    session.get("current_pdf_stored_filename") == delete_pdf
+                    or session.get("current_pdf_name") == delete_pdf
+                    or current_path_name == delete_pdf
+                ):
                     session.pop("current_pdf_name", None)
                     session.pop("current_pdf_path", None)
+                    session.pop("current_pdf_stored_filename", None)
                     session.pop("original_filename", None)
 
         elif selected_pdf:
@@ -499,9 +567,12 @@ def index():
             if not safe_path:
                 upload_message = "\u9009\u62e9\u7684 PDF \u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u4e0d\u5408\u6cd5\u3002"
             else:
-                session["current_pdf_name"] = selected_pdf
+                display_filename = get_original_filename(selected_pdf)
+                session["current_pdf_name"] = display_filename
                 session["current_pdf_path"] = safe_path
-                upload_message = f"\u5f53\u524d\u4f7f\u7528\u6587\u6863\uff1a{selected_pdf}"
+                session["current_pdf_stored_filename"] = selected_pdf
+                session["original_filename"] = display_filename
+                upload_message = f"\u5f53\u524d\u4f7f\u7528\u6587\u6863\uff1a{display_filename}"
 
         elif action == "upload":
             if not pdf_file or pdf_file.filename == "":
@@ -510,14 +581,21 @@ def index():
                 upload_message = "\u53ea\u652f\u6301\u4e0a\u4f20 PDF \u6587\u4ef6"
             else:
                 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
-                original_filename = os.path.basename(pdf_file.filename)
-                filename = make_saved_pdf_filename()
-                save_path = os.path.join(get_upload_folder(), filename)
+                original_filename = pdf_file.filename.replace("\\", "/").split("/")[-1]
+                stored_filename = make_saved_pdf_filename()
+                save_path = os.path.join(get_upload_folder(), stored_filename)
                 pdf_file.save(save_path)
-                session["current_pdf_name"] = filename
+                file_index = load_file_index()
+                file_index[stored_filename] = {
+                    "original_filename": original_filename,
+                    "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                save_file_index(file_index)
+                session["current_pdf_name"] = original_filename
                 session["current_pdf_path"] = save_path
+                session["current_pdf_stored_filename"] = stored_filename
                 session["original_filename"] = original_filename
-                upload_message = f"PDF \u4e0a\u4f20\u6210\u529f\uff1a{filename}"
+                upload_message = f"PDF \u4e0a\u4f20\u6210\u529f\uff1a{original_filename}"
 
         elif action == "summary":
             pdf_text, error = get_current_pdf_text()
@@ -548,6 +626,7 @@ def index():
         upload_message=upload_message,
         uploaded_files=get_uploaded_files(),
         current_pdf_name=session.get("current_pdf_name"),
+        current_pdf_stored_filename=session.get("current_pdf_stored_filename"),
     )
 
 

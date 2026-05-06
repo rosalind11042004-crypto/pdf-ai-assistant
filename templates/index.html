@@ -53,16 +53,16 @@
 
                         {% if uploaded_files %}
                             <ul>
-                                {% for filename in uploaded_files %}
+                                {% for file in uploaded_files %}
                                     <li>
-                                        <span class="{% if filename == current_pdf_name %}current-pdf{% endif %}">
-                                            {{ filename }}
+                                        <span class="{% if file.stored_filename == current_pdf_stored_filename %}current-pdf{% endif %}">
+                                            {{ file.display_filename }}
                                         </span>
                                         <div class="file-actions">
                                             <button
                                                 type="submit"
                                                 name="select_pdf"
-                                                value="{{ filename }}"
+                                                value="{{ file.stored_filename }}"
                                                 class="select-pdf-btn"
                                             >
                                                 选择
@@ -70,7 +70,7 @@
                                             <button
                                                 type="submit"
                                                 name="delete_pdf"
-                                                value="{{ filename }}"
+                                                value="{{ file.stored_filename }}"
                                                 class="delete-pdf-btn"
                                             >
                                                 删除
