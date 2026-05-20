@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>注册 - PDF 学习助手</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+    <div class="page-wrapper">
+        <main class="main-card auth-card">
+            <header class="hero">
+                <p class="eyebrow">PDF AI Assistant</p>
+                <h1>注册</h1>
+                <p class="subtitle">使用邮箱和密码创建账号，不同账号之间文档无法共享。</p>
+            </header>
+
+            <form method="post" action="{{ url_for('register') }}" class="assistant-form">
+                {% if message %}
+                    <p class="upload-message">{{ message }}</p>
+                {% endif %}
+
+                <label for="email" class="field-label">邮箱</label>
+                <input
+                    type="email"
+                    id="email"
+                    name="email"
+                    autocomplete="email"
+                    required
+                >
+
+                <label for="password" class="field-label">密码</label>
+                <input
+                    type="password"
+                    id="password"
+                    name="password"
+                    autocomplete="new-password"
+                    minlength="6"
+                    required
+                >
+
+                <button type="submit" class="primary-btn">注册</button>
+            </form>
+
+            <p class="auth-switch">
+                已经有账号？<a href="{{ url_for('login') }}">登录</a>
+            </p>
+        </main>
+    </div>
+</body>
+</html>

@@ -52,6 +52,37 @@ body {
     margin-bottom: 52px;
 }
 
+.topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 34px;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 15px;
+    letter-spacing: 0.04em;
+    color: #4b5563;
+}
+
+.topbar a,
+.auth-switch a {
+    color: #111827;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.auth-card {
+    max-width: 640px;
+}
+
+.auth-switch {
+    margin-top: 26px;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 16px;
+    letter-spacing: 0.04em;
+    color: #6b7280;
+}
+
 .eyebrow {
     font-size: 14px;
     letter-spacing: 0.34em;
@@ -165,10 +196,23 @@ body {
     margin-bottom: 10px;
 }
 
+.current-doc-status {
+    margin-bottom: 18px;
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 17px;
+    letter-spacing: 0.06em;
+    line-height: 1.8;
+    color: #6b7280;
+}
+
 .file-actions {
     display: flex;
     flex: 0 0 auto;
     gap: 8px;
+}
+
+.file-actions form {
+    margin: 0;
 }
 
 .select-pdf-btn {
@@ -261,7 +305,9 @@ input[type="file"] {
     margin-bottom: 12px;
 }
 
-input[type="text"] {
+input[type="text"],
+input[type="email"],
+input[type="password"] {
     width: 100%;
     padding: 18px 20px;
     margin-bottom: 28px;
@@ -279,12 +325,16 @@ input[type="text"] {
     transition: all 0.25s ease;
 }
 
-input[type="text"]:focus {
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus {
     background: rgba(255, 255, 255, 0.8);
     border-bottom-color: #111827;
 }
 
-input[type="text"]::placeholder {
+input[type="text"]::placeholder,
+input[type="email"]::placeholder,
+input[type="password"]::placeholder {
     color: #9ca3af;
 }
 

@@ -4,14 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PDF 学习助手</title>
-
-    <!-- Flask 推荐用 url_for 引入静态文件 -->
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 
 <body>
     <div class="page-wrapper">
         <main class="main-card">
+            <nav class="topbar">
+                <span>{{ user_email }}</span>
+                <a href="{{ url_for('logout') }}">退出登录</a>
+            </nav>
 
             <header class="hero">
                 <p class="eyebrow">PDF AI Assistant</p>
@@ -20,83 +22,75 @@
                     上传 PDF，自动生成摘要，并基于文档内容进行智能问答。
                 </p>
                 <p class="subtitle">
-                    目前调用模型：Qwen LLM 2.0 模型
+                    当前调用模型：Qwen-plus
                 </p>
             </header>
 
-            <form method="post" enctype="multipart/form-data" class="assistant-form">
+            <section class="section-card">
+                <h2>上传文档</h2>
+                <p class="section-desc">
+                    请选择一份 PDF 文件。每个账号只能看到自己上传的文档。
+                </p>
 
-                <section class="section-card">
-                    <h2>📄 上传文档</h2>
-                    <p class="section-desc">
-                        请选择一份 PDF 文件，后续系统会读取文档内容并进行分析。
-                    </p>
-
+                <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data" class="assistant-form">
                     <label class="upload-box" for="pdf">
                         <span>点击上传 PDF 文件</span>
-                        <small>支持课程资料、论文、报告等 PDF 文档</small>
+                        <small>支持课程资料、论文、报告等 PDF 文档，单个文件最大 10MB。</small>
                     </label>
 
                     <input type="file" id="pdf" name="pdf" accept="application/pdf">
                     <p id="selected-file-name" class="section-desc"></p>
                     <p class="upload-message">{{ upload_message }}</p>
 
-                    <div class="uploaded-list">
-                        <h3>已上传 PDF</h3>
-                        <p class="current-doc-status">
-                            {% if current_pdf_name %}
-                                当前使用文档：{{ current_pdf_name }}
-                            {% else %}
-                                当前没有选中文档
-                            {% endif %}
-                        </p>
-
-                        {% if uploaded_files %}
-                            <ul>
-                                {% for file in uploaded_files %}
-                                    <li>
-                                        <span class="{% if file.stored_filename == current_pdf_stored_filename %}current-pdf{% endif %}">
-                                            {{ file.display_filename }}
-                                        </span>
-                                        <div class="file-actions">
-                                            <button
-                                                type="submit"
-                                                name="select_pdf"
-                                                value="{{ file.stored_filename }}"
-                                                class="select-pdf-btn"
-                                            >
-                                                选择
-                                            </button>
-                                            <button
-                                                type="submit"
-                                                name="delete_pdf"
-                                                value="{{ file.stored_filename }}"
-                                                class="delete-pdf-btn"
-                                            >
-                                                删除
-                                            </button>
-                                        </div>
-                                    </li>
-                                {% endfor %}
-                            </ul>
-                        {% else %}
-                            <p>暂无已上传 PDF。</p>
-                        {% endif %}
-                    </div>
-
-                    <button type="submit" name="action" value="upload" class="primary-btn">
-                        &#19978;&#20256; PDF
+                    <button type="submit" class="primary-btn">
+                        上传 PDF
                     </button>
+                </form>
+            </section>
 
-                    <button type="submit" name="action" value="summary" class="primary-btn">
-                        生成摘要
-                    </button>
-                </section>
+            <section class="section-card">
+                <h2>我的 PDF</h2>
+                <p class="current-doc-status">
+                    {% if current_document %}
+                        当前使用文档：{{ current_document.original_filename }}
+                    {% else %}
+                        当前没有选中文档。
+                    {% endif %}
+                </p>
 
+                <div class="uploaded-list">
+                    {% if documents %}
+                        <ul>
+                            {% for document in documents %}
+                                <li>
+                                    <span class="{% if document.id == current_document_id %}current-pdf{% endif %}">
+                                        {{ document.original_filename }}
+                                    </span>
+                                    <div class="file-actions">
+                                        <form method="post" action="{{ url_for('select_document', document_id=document.id) }}">
+                                            <button type="submit" class="select-pdf-btn">选择</button>
+                                        </form>
+                                        <form method="post" action="{{ url_for('summarize_document', document_id=document.id) }}">
+                                            <button type="submit" class="select-pdf-btn">生成摘要</button>
+                                        </form>
+                                        <form method="post" action="{{ url_for('delete_document', document_id=document.id) }}">
+                                            <button type="submit" class="delete-pdf-btn">删除</button>
+                                        </form>
+                                    </div>
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        <p>你还没有上传 PDF。</p>
+                    {% endif %}
+                </div>
+            </section>
+
+            <form method="post" action="{{ url_for('index') }}" class="assistant-form">
                 <section class="section-card">
-                    <h2>💬 文档问答</h2>
+                    <h2>文档问答</h2>
                     <p class="section-desc">
-                        输入你想了解的问题，系统会结合 PDF 内容进行回答。
+                        输入你想了解的问题，系统会结合当前选中的 PDF 内容进行回答。
                     </p>
 
                     <label for="question" class="field-label">你的问题</label>
@@ -111,11 +105,10 @@
                         提问
                     </button>
                 </section>
-
             </form>
 
             <section class="section-card result-section">
-                <h2>📝 结果展示</h2>
+                <h2>结果展示</h2>
                 <p class="section-desc">
                     这里会显示 AI 生成的摘要或问答结果。
                 </p>
@@ -128,16 +121,16 @@
                     {% endif %}
                 </div>
             </section>
-
         </main>
     </div>
+
     <script>
         const pdfInput = document.getElementById("pdf");
         const selectedFileName = document.getElementById("selected-file-name");
 
         pdfInput.addEventListener("change", function () {
             if (pdfInput.files.length > 0) {
-                selectedFileName.textContent = "\u5df2\u9009\u62e9\u6587\u4ef6\uff1a" + pdfInput.files[0].name;
+                selectedFileName.textContent = "已选择文件：" + pdfInput.files[0].name;
             } else {
                 selectedFileName.textContent = "";
             }

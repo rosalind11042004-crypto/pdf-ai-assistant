@@ -3,10 +3,12 @@ import os
 import re
 import uuid
 from datetime import datetime
+from functools import wraps
 from html import escape
 from io import BytesIO
 
-from flask import Flask, render_template, request, session
+from flask import Flask, redirect, render_template, request, session, url_for
+from werkzeug.utils import secure_filename
 
 try:
     from dotenv import load_dotenv
@@ -36,6 +38,7 @@ except ImportError:
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = "uploads"
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
 if load_dotenv:
     load_dotenv()
@@ -43,9 +46,12 @@ if load_dotenv:
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "pdf-ai-assistant-demo")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET")
+SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "pdf_files")
 supabase_client = None
+supabase_auth_client = None
 
 
 def is_placeholder_value(value):
@@ -62,7 +68,8 @@ def is_supabase_configured():
 
 
 print("[SUPABASE] URL loaded:", bool(SUPABASE_URL))
-print("[SUPABASE] KEY loaded:", bool(SUPABASE_SERVICE_ROLE_KEY))
+print("[SUPABASE] service key loaded:", bool(SUPABASE_SERVICE_ROLE_KEY))
+print("[SUPABASE] anon key loaded:", bool(SUPABASE_ANON_KEY))
 
 if (
     SUPABASE_URL
@@ -77,11 +84,49 @@ if (
 elif is_supabase_configured() and create_client is None:
     print("[SUPABASE] init failed: supabase package is not installed")
 
+if SUPABASE_URL and SUPABASE_ANON_KEY and create_client is not None:
+    try:
+        supabase_auth_client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    except Exception as exc:
+        print("[SUPABASE] auth init failed:", exc)
+
 print("[SUPABASE] enabled:", bool(supabase_client and is_supabase_configured()))
 
 
 def is_supabase_enabled():
     return bool(supabase_client and is_supabase_configured())
+
+
+def is_auth_enabled():
+    return bool(supabase_auth_client)
+
+
+def get_current_user_id():
+    return session.get("user_id")
+
+
+def get_current_user_email():
+    return session.get("user_email")
+
+
+def login_required(view_func):
+    @wraps(view_func)
+    def wrapped_view(*args, **kwargs):
+        if not get_current_user_id():
+            return redirect(url_for("login"))
+        return view_func(*args, **kwargs)
+
+    return wrapped_view
+
+
+def clear_pdf_session():
+    session.pop("current_document_id", None)
+    session.pop("current_pdf_name", None)
+    session.pop("current_pdf_path", None)
+    session.pop("current_pdf_stored_filename", None)
+    session.pop("current_stored_filename", None)
+    session.pop("current_storage_path", None)
+    session.pop("original_filename", None)
 
 
 def is_pdf(filename):
@@ -91,7 +136,7 @@ def is_pdf(filename):
 def is_allowed_pdf_upload(file_storage):
     filename = file_storage.filename or ""
     content_type = file_storage.mimetype or ""
-    return is_pdf(filename) or content_type == "application/pdf"
+    return is_pdf(filename) and content_type in ("application/pdf", "application/octet-stream")
 
 
 def make_saved_pdf_filename():
@@ -240,6 +285,25 @@ def get_storage_path(stored_filename):
     return f"pdfs/{stored_filename}"
 
 
+def make_user_storage_path(user_id, original_filename):
+    safe_name = secure_filename(original_filename or "upload.pdf")
+    if not safe_name:
+        safe_name = "upload.pdf"
+    if not is_pdf(safe_name):
+        safe_name = f"{safe_name}.pdf"
+    return f"{user_id}/{uuid.uuid4().hex}_{safe_name}"
+
+
+def is_safe_user_storage_path(storage_path, user_id):
+    if not storage_path or not user_id:
+        return False
+    if not storage_path.startswith(f"{user_id}/"):
+        return False
+    if storage_path != f"{user_id}/{os.path.basename(storage_path)}":
+        return False
+    return is_pdf(os.path.basename(storage_path))
+
+
 def upload_pdf_to_storage(storage_path, pdf_bytes):
     print("[STORAGE] uploading...")
     try:
@@ -256,7 +320,9 @@ def upload_pdf_to_storage(storage_path, pdf_bytes):
 
 
 def download_pdf_from_storage(storage_path):
-    if not storage_path or storage_path != f"pdfs/{os.path.basename(storage_path)}":
+    user_id = get_current_user_id()
+    old_flat_path = storage_path == f"pdfs/{os.path.basename(storage_path or '')}"
+    if not storage_path or not (old_flat_path or is_safe_user_storage_path(storage_path, user_id)):
         return None, "\u5f53\u524d PDF \u5b58\u50a8\u8def\u5f84\u4e0d\u5408\u6cd5\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9 PDF\u3002"
 
     print("[STORAGE] downloading...")
@@ -270,7 +336,9 @@ def download_pdf_from_storage(storage_path):
 
 
 def delete_pdf_from_storage(storage_path):
-    if not storage_path or storage_path != f"pdfs/{os.path.basename(storage_path)}":
+    user_id = get_current_user_id()
+    old_flat_path = storage_path == f"pdfs/{os.path.basename(storage_path or '')}"
+    if not storage_path or not (old_flat_path or is_safe_user_storage_path(storage_path, user_id)):
         return False, "\u6587\u4ef6\u5b58\u50a8\u8def\u5f84\u4e0d\u5408\u6cd5\uff0c\u65e0\u6cd5\u5220\u9664\u3002"
 
     print("[STORAGE] deleting...")
@@ -283,13 +351,139 @@ def delete_pdf_from_storage(storage_path):
         return False, str(exc)
 
 
+TABLE_CONFIG_ERROR_MESSAGE = "数据库表配置错误，请检查 Supabase 表名。"
+
+
+def is_supabase_table_missing_error(exc):
+    error_text = str(exc).lower()
+    return (
+        "pgrst205" in error_text
+        or "42703" in error_text
+        or "could not find the table" in error_text
+        or "column" in error_text and "does not exist" in error_text
+        or "schema cache" in error_text
+    )
+
+
+def get_user_documents():
+    user_id = get_current_user_id()
+    if not is_supabase_enabled() or not user_id:
+        return [], None
+
+    try:
+        response = (
+            supabase_client.table(SUPABASE_TABLE)
+            .select("id, original_filename, storage_path, summary, created_at")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+    except Exception as exc:
+        print("[SUPABASE] document list failed:", exc)
+        if is_supabase_table_missing_error(exc):
+            return [], TABLE_CONFIG_ERROR_MESSAGE
+        return [], None
+
+    return response.data or [], None
+
+
+def get_user_document(document_id):
+    user_id = get_current_user_id()
+    if not is_supabase_enabled() or not user_id:
+        return None
+
+    try:
+        uuid.UUID(str(document_id))
+    except (TypeError, ValueError):
+        return None
+
+    try:
+        response = (
+            supabase_client.table(SUPABASE_TABLE)
+            .select("id, user_id, original_filename, storage_path, summary, created_at")
+            .eq("id", str(document_id))
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        print("[SUPABASE] document query failed:", exc)
+        if is_supabase_table_missing_error(exc):
+            session["database_error_message"] = TABLE_CONFIG_ERROR_MESSAGE
+        return None
+
+    if not response.data:
+        return None
+    return response.data[0]
+
+
+def insert_user_document(original_filename, storage_path):
+    user_id = get_current_user_id()
+    if not is_supabase_enabled() or not user_id:
+        return None, "Supabase is not configured"
+
+    try:
+        stored_filename = os.path.basename(storage_path)
+        response = (
+            supabase_client.table(SUPABASE_TABLE)
+            .insert(
+                {
+                    "user_id": user_id,
+                    "original_filename": original_filename,
+                    "stored_filename": stored_filename,
+                    "storage_path": storage_path,
+                }
+            )
+            .execute()
+        )
+    except Exception as exc:
+        print("[SUPABASE] document insert failed:", exc)
+        if is_supabase_table_missing_error(exc):
+            return None, TABLE_CONFIG_ERROR_MESSAGE
+        return None, str(exc)
+
+    if not response.data:
+        return None, "No document record returned"
+    return response.data[0], None
+
+
+def update_user_document_summary(document_id, summary):
+    user_id = get_current_user_id()
+    if not is_supabase_enabled() or not user_id:
+        return False
+
+    try:
+        supabase_client.table(SUPABASE_TABLE).update({"summary": summary}).eq(
+            "id", str(document_id)
+        ).eq("user_id", user_id).execute()
+        return True
+    except Exception as exc:
+        print("[SUPABASE] summary update failed:", exc)
+        return False
+
+
+def delete_user_document_record(document_id):
+    user_id = get_current_user_id()
+    if not is_supabase_enabled() or not user_id:
+        return False
+
+    try:
+        supabase_client.table(SUPABASE_TABLE).delete().eq(
+            "id", str(document_id)
+        ).eq("user_id", user_id).execute()
+        return True
+    except Exception as exc:
+        print("[SUPABASE] document delete failed:", exc)
+        return False
+
+
 def get_supabase_pdf_record(stored_filename):
     if not is_supabase_enabled() or not is_safe_pdf_filename(stored_filename):
         return None
 
     try:
         response = (
-            supabase_client.table("pdf_files")
+            supabase_client.table(SUPABASE_TABLE)
             .select("original_filename, stored_filename, storage_path, uploaded_at")
             .eq("stored_filename", stored_filename)
             .limit(1)
@@ -313,7 +507,7 @@ def insert_supabase_pdf_record(original_filename, stored_filename, storage_path)
 
     try:
         print("[SUPABASE] inserting metadata...")
-        response = supabase_client.table("pdf_files").insert(
+        response = supabase_client.table(SUPABASE_TABLE).insert(
             {
                 "original_filename": original_filename,
                 "stored_filename": stored_filename,
@@ -332,7 +526,7 @@ def delete_supabase_pdf_record(stored_filename):
         return False
 
     try:
-        supabase_client.table("pdf_files").delete().eq(
+        supabase_client.table(SUPABASE_TABLE).delete().eq(
             "stored_filename", stored_filename
         ).execute()
         return True
@@ -347,7 +541,7 @@ def get_supabase_uploaded_files():
 
     try:
         response = (
-            supabase_client.table("pdf_files")
+            supabase_client.table(SUPABASE_TABLE)
             .select("original_filename, stored_filename, storage_path, uploaded_at")
             .order("uploaded_at", desc=True)
             .execute()
@@ -782,6 +976,18 @@ def answer_question(pdf_text, question):
 
 
 def get_current_pdf_text():
+    document_id = session.get("current_document_id")
+    if document_id:
+        document = get_user_document(document_id)
+        if not document:
+            return None, pop_database_error_message(
+                "当前 PDF 不存在或不属于当前登录用户，请重新选择。"
+            )
+        pdf_bytes, error = download_pdf_from_storage(document.get("storage_path"))
+        if error:
+            return None, error
+        return read_pdf_text_from_bytes(pdf_bytes)
+
     stored_filename = session.get("current_pdf_stored_filename")
     local_file_path = get_safe_pdf_path(stored_filename) if stored_filename else None
 
@@ -834,159 +1040,270 @@ def render_result_html(result):
     return markdown.markdown(safe_text, extensions=["extra"])
 
 
-@app.route("/", methods=["GET", "POST"])
-def index():
-    result = ""
-    upload_message = ""
+def render_home(upload_message="", result="", status_code=200):
+    documents, documents_error = get_user_documents()
+    if documents_error and not upload_message:
+        upload_message = documents_error
+    current_document_id = session.get("current_document_id")
+    current_document = None
 
+    for document in documents:
+        if document.get("id") == current_document_id:
+            current_document = document
+            break
+
+    if not current_document and documents:
+        current_document = documents[0]
+        session["current_document_id"] = current_document.get("id")
+        session["current_pdf_name"] = current_document.get("original_filename")
+
+    if current_document and not upload_message:
+        upload_message = f"当前 PDF：{current_document.get('original_filename')}"
+
+    if not result and current_document and current_document.get("summary"):
+        result = current_document.get("summary")
+
+    return (
+        render_template(
+            "index.html",
+            result_html=render_result_html(result),
+            upload_message=upload_message,
+            documents=documents,
+            current_document=current_document,
+            current_document_id=session.get("current_document_id"),
+            user_email=get_current_user_email(),
+        ),
+        status_code,
+    )
+
+
+def get_auth_error_message(exc, default_message):
+    error_text = str(exc).lower()
+
+    if (
+        "timeout" in error_text
+        or "timed out" in error_text
+        or "read operation timed out" in error_text
+    ):
+        return "连接 Supabase 超时，请检查网络、代理或稍后重试。"
+    if "invalid login credentials" in error_text:
+        return "邮箱或密码不正确。"
+    if "email not confirmed" in error_text:
+        return "该邮箱还未完成验证。"
+
+    return default_message
+
+
+def pop_database_error_message(default_message):
+    return session.pop("database_error_message", None) or default_message
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if get_current_user_id():
+        return redirect(url_for("index"))
+
+    message = ""
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+
+        if not email or not password:
+            message = "请输入邮箱和密码。"
+        elif len(password) < 6:
+            message = "密码至少需要 6 位。"
+        elif not is_auth_enabled():
+            message = "Supabase Auth 未配置，请检查 SUPABASE_ANON_KEY。"
+        else:
+            try:
+                supabase_auth_client.auth.sign_up(
+                    {"email": email, "password": password}
+                )
+                return render_template(
+                    "login.html",
+                    message="注册成功，请登录。",
+                    email=email,
+                )
+            except Exception as exc:
+                print("[AUTH] register failed:", exc)
+                message = get_auth_error_message(
+                    exc,
+                    "注册失败，请确认邮箱格式、密码强度，或稍后重试。",
+                )
+
+    return render_template("register.html", message=message)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if get_current_user_id():
+        return redirect(url_for("index"))
+
+    message = ""
+    email = ""
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+
+        if not email or not password:
+            message = "请输入邮箱和密码。"
+        elif not is_auth_enabled():
+            message = "Supabase Auth 未配置，请检查 SUPABASE_ANON_KEY。"
+        else:
+            try:
+                auth_response = supabase_auth_client.auth.sign_in_with_password(
+                    {"email": email, "password": password}
+                )
+                if not auth_response.user or not auth_response.session:
+                    message = "登录失败，请检查邮箱和密码。"
+                else:
+                    session.clear()
+                    session["user_id"] = auth_response.user.id
+                    session["user_email"] = auth_response.user.email
+                    session["access_token"] = auth_response.session.access_token
+                    session["refresh_token"] = auth_response.session.refresh_token
+                    return redirect(url_for("index"))
+            except Exception as exc:
+                print("[AUTH] login failed:", exc)
+                message = get_auth_error_message(
+                    exc,
+                    "登录失败，请检查邮箱和密码。",
+                )
+
+    return render_template("login.html", message=message, email=email)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+@app.route("/", methods=["GET", "POST"])
+@login_required
+def index():
     if request.method == "POST":
         action = request.form.get("action")
-        selected_pdf = request.form.get("select_pdf")
-        delete_pdf = request.form.get("delete_pdf")
-        pdf_file = request.files.get("pdf")
+        if action == "ask":
+            question = request.form.get("question", "").strip()
+            if not question:
+                return render_home(result="请输入你的问题。")
 
-        if delete_pdf:
-            if not is_safe_pdf_filename(delete_pdf):
-                upload_message = "\u6587\u4ef6\u4e0d\u5408\u6cd5\uff0c\u65e0\u6cd5\u5220\u9664\u3002"
-            elif is_supabase_enabled():
-                file_record = get_supabase_pdf_record(delete_pdf)
-                if not file_record:
-                    upload_message = "\u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u5df2\u88ab\u5220\u9664\u3002"
-                else:
-                    display_filename = file_record.get("original_filename") or delete_pdf
-                    storage_path = file_record.get("storage_path")
-                    storage_deleted, storage_error = delete_pdf_from_storage(storage_path)
-
-                    if not storage_deleted:
-                        upload_message = f"Storage \u6587\u4ef6\u5220\u9664\u5931\u8d25\uff1a{storage_error}"
-                    else:
-                        delete_supabase_pdf_record(delete_pdf)
-                        upload_message = f"\u5df2\u5220\u9664\u6587\u4ef6\uff1a{display_filename}"
-
-                        if (
-                            session.get("current_stored_filename") == delete_pdf
-                            or session.get("current_pdf_stored_filename") == delete_pdf
-                        ):
-                            clear_current_pdf_session()
-            else:
-                safe_path = get_upload_pdf_path(delete_pdf, must_exist=False)
-
-                if not safe_path:
-                    upload_message = "\u6587\u4ef6\u4e0d\u5408\u6cd5\uff0c\u65e0\u6cd5\u5220\u9664\u3002"
-                else:
-                    display_filename = get_original_filename(delete_pdf)
-                    if os.path.isfile(safe_path):
-                        os.remove(safe_path)
-                    file_index = load_file_index()
-                    file_index.pop(delete_pdf, None)
-                    save_file_index(file_index)
-                    upload_message = f"\u5df2\u5220\u9664\u6587\u4ef6\uff1a{display_filename}"
-
-                    current_path_name = os.path.basename(session.get("current_pdf_path", ""))
-                    if (
-                        session.get("current_pdf_stored_filename") == delete_pdf
-                        or session.get("current_pdf_name") == delete_pdf
-                        or current_path_name == delete_pdf
-                    ):
-                        clear_current_pdf_session()
-
-        elif selected_pdf:
-            if not is_safe_pdf_filename(selected_pdf):
-                upload_message = "\u9009\u62e9\u7684 PDF \u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u4e0d\u5408\u6cd5\u3002"
-            elif is_supabase_enabled():
-                file_record = get_supabase_pdf_record(selected_pdf)
-                if not file_record:
-                    safe_path = get_safe_pdf_path(selected_pdf)
-                    if safe_path:
-                        display_filename = get_original_filename(selected_pdf)
-                        set_current_local_pdf(display_filename, selected_pdf, safe_path)
-                        upload_message = f"\u5f53\u524d\u4f7f\u7528\u672c\u5730\u6587\u6863\uff1a{display_filename}"
-                    else:
-                        upload_message = "\u9009\u62e9\u7684 PDF \u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u4e0d\u5408\u6cd5\u3002"
-                else:
-                    display_filename = file_record.get("original_filename") or selected_pdf
-                    storage_path = file_record.get("storage_path")
-                    set_current_supabase_pdf(display_filename, selected_pdf, storage_path)
-                    upload_message = f"\u5f53\u524d\u4f7f\u7528\u6587\u6863\uff1a{display_filename}"
-            else:
-                safe_path = get_safe_pdf_path(selected_pdf)
-
-                if not safe_path:
-                    upload_message = "\u9009\u62e9\u7684 PDF \u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u4e0d\u5408\u6cd5\u3002"
-                else:
-                    display_filename = get_original_filename(selected_pdf)
-                    set_current_local_pdf(display_filename, selected_pdf, safe_path)
-                    upload_message = f"\u5f53\u524d\u4f7f\u7528\u6587\u6863\uff1a{display_filename}"
-
-        elif action == "upload":
-            if not pdf_file or pdf_file.filename == "":
-                upload_message = "\u8bf7\u5148\u9009\u62e9 PDF \u6587\u4ef6"
-            elif not is_allowed_pdf_upload(pdf_file):
-                upload_message = "\u53ea\u652f\u6301\u4e0a\u4f20 PDF \u6587\u4ef6"
-            elif is_supabase_enabled():
-                original_filename = pdf_file.filename.replace("\\", "/").split("/")[-1]
-                stored_filename = make_saved_pdf_filename()
-                storage_path = get_storage_path(stored_filename)
-                pdf_bytes = pdf_file.read()
-
-                storage_saved, storage_error = upload_pdf_to_storage(storage_path, pdf_bytes)
-                if not storage_saved:
-                    save_pdf_locally(original_filename, pdf_bytes=pdf_bytes)
-                    upload_message = (
-                        f"Supabase Storage \u4e0a\u4f20\u5931\u8d25\uff0c"
-                        f"\u5df2\u6539\u4e3a\u672c\u5730\u4fdd\u5b58\uff1a{original_filename}"
-                    )
-                else:
-                    supabase_saved, supabase_error = insert_supabase_pdf_record(
-                        original_filename, stored_filename, storage_path
-                    )
-
-                    if not supabase_saved:
-                        delete_pdf_from_storage(storage_path)
-                        save_pdf_locally(original_filename, pdf_bytes=pdf_bytes)
-                        upload_message = (
-                            f"Supabase \u5143\u6570\u636e\u5199\u5165\u5931\u8d25\uff0c"
-                            f"\u5df2\u6539\u4e3a\u672c\u5730\u4fdd\u5b58\uff1a{original_filename}"
-                        )
-                    else:
-                        set_current_supabase_pdf(original_filename, stored_filename, storage_path)
-                        upload_message = f"PDF \u4e0a\u4f20\u6210\u529f\uff1a{original_filename}"
-            else:
-                original_filename = pdf_file.filename.replace("\\", "/").split("/")[-1]
-                save_pdf_locally(original_filename, file_storage=pdf_file)
-                upload_message = f"PDF \u4e0a\u4f20\u6210\u529f\uff1a{original_filename}"
-
-        elif action == "summary":
             pdf_text, error = get_current_pdf_text()
             if error:
-                result = error
-            else:
-                result = generate_summary(pdf_text)
+                return render_home(result=error)
 
-        elif action == "ask":
-            question = request.form.get("question", "").strip()
+            return render_home(result=answer_question(pdf_text, question))
 
-            if not question:
-                result = "\u8bf7\u8f93\u5165\u4f60\u7684\u95ee\u9898\u3002"
-            else:
-                pdf_text, error = get_current_pdf_text()
-                if error:
-                    result = error
-                else:
-                    result = answer_question(pdf_text, question)
+    return render_home()
 
-    if not upload_message and session.get("current_pdf_name"):
-        upload_message = f"\u5f53\u524d PDF\uff1a{session.get('current_pdf_name')}"
 
-    result_html = render_result_html(result)
-    return render_template(
-        "index.html",
-        result_html=result_html,
-        upload_message=upload_message,
-        uploaded_files=get_uploaded_files(),
-        current_pdf_name=session.get("current_pdf_name"),
-        current_pdf_stored_filename=session.get("current_pdf_stored_filename"),
-    )
+@app.route("/files")
+@login_required
+def files():
+    return render_home()
+
+
+@app.route("/upload", methods=["POST"])
+@login_required
+def upload():
+    if not is_supabase_enabled():
+        return render_home(upload_message="Supabase 未配置，无法上传 PDF。", status_code=503)
+
+    pdf_file = request.files.get("pdf")
+    if not pdf_file or pdf_file.filename == "":
+        return render_home(upload_message="请先选择 PDF 文件。", status_code=400)
+    if not is_allowed_pdf_upload(pdf_file):
+        return render_home(upload_message="只支持上传 PDF 文件。", status_code=400)
+
+    original_filename = pdf_file.filename.replace("\\", "/").split("/")[-1]
+    safe_name = secure_filename(original_filename)
+    if not safe_name:
+        return render_home(upload_message="文件名不合法，请重命名后再上传。", status_code=400)
+
+    pdf_bytes = pdf_file.read()
+    if not pdf_bytes:
+        return render_home(upload_message="PDF 文件为空。", status_code=400)
+
+    storage_path = make_user_storage_path(get_current_user_id(), original_filename)
+    storage_saved, storage_error = upload_pdf_to_storage(storage_path, pdf_bytes)
+    if not storage_saved:
+        return render_home(
+            upload_message=f"Storage 上传失败：{storage_error}",
+            status_code=502,
+        )
+
+    document, document_error = insert_user_document(original_filename, storage_path)
+    if document_error:
+        delete_pdf_from_storage(storage_path)
+        return render_home(
+            upload_message=f"文档记录写入失败：{document_error}",
+            status_code=502,
+        )
+
+    session["current_document_id"] = document.get("id")
+    session["current_pdf_name"] = original_filename
+    return render_home(upload_message=f"PDF 上传成功：{original_filename}")
+
+
+@app.route("/select/<document_id>", methods=["POST"])
+@login_required
+def select_document(document_id):
+    document = get_user_document(document_id)
+    if not document:
+        return render_home(
+            upload_message=pop_database_error_message("文件不存在或不属于当前用户。"),
+            status_code=404,
+        )
+
+    session["current_document_id"] = document.get("id")
+    session["current_pdf_name"] = document.get("original_filename")
+    return render_home(upload_message=f"当前使用文档：{document.get('original_filename')}")
+
+
+@app.route("/summarize/<document_id>", methods=["POST"])
+@login_required
+def summarize_document(document_id):
+    document = get_user_document(document_id)
+    if not document:
+        return render_home(
+            result=pop_database_error_message("文件不存在或不属于当前用户。"),
+            status_code=404,
+        )
+
+    session["current_document_id"] = document.get("id")
+    session["current_pdf_name"] = document.get("original_filename")
+    pdf_bytes, error = download_pdf_from_storage(document.get("storage_path"))
+    if error:
+        return render_home(result=error, status_code=502)
+
+    pdf_text, error = read_pdf_text_from_bytes(pdf_bytes)
+    if error:
+        return render_home(result=error, status_code=400)
+
+    summary = generate_summary(pdf_text)
+    update_user_document_summary(document.get("id"), summary)
+    return render_home(result=summary)
+
+
+@app.route("/delete/<document_id>", methods=["POST"])
+@login_required
+def delete_document(document_id):
+    document = get_user_document(document_id)
+    if not document:
+        return render_home(
+            upload_message=pop_database_error_message("文件不存在或不属于当前用户。"),
+            status_code=404,
+        )
+
+    storage_deleted, storage_error = delete_pdf_from_storage(document.get("storage_path"))
+    if not storage_deleted:
+        return render_home(upload_message=f"Storage 文件删除失败：{storage_error}", status_code=502)
+
+    delete_user_document_record(document.get("id"))
+    if session.get("current_document_id") == document.get("id"):
+        clear_pdf_session()
+    return render_home(upload_message=f"已删除文件：{document.get('original_filename')}")
 
 
 if __name__ == "__main__":
