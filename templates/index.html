@@ -19,10 +19,10 @@
                 <p class="eyebrow">PDF AI Assistant</p>
                 <h1>PDF 学习助手</h1>
                 <p class="subtitle">
-                    上传 PDF，自动生成摘要，并基于文档内容进行智能问答。
+                    上传 PDF，自动生成摘要、识别关键图表，并基于文档内容进行智能问答。
                 </p>
                 <p class="subtitle">
-                    当前调用模型：Qwen-plus
+                    当前调用模型：Qwen-plus / Qwen-VL
                 </p>
             </header>
 
@@ -70,6 +70,9 @@
                                         <form method="post" action="{{ url_for('select_document', document_id=document.id) }}">
                                             <button type="submit" class="select-pdf-btn">选择</button>
                                         </form>
+                                        <form method="post" action="{{ url_for('analyze_figures_document', document_id=document.id) }}">
+                                            <button type="submit" class="select-pdf-btn">识别图表</button>
+                                        </form>
                                         <form method="post" action="{{ url_for('summarize_document', document_id=document.id) }}">
                                             <button type="submit" class="select-pdf-btn">生成摘要</button>
                                         </form>
@@ -90,7 +93,7 @@
                 <section class="section-card">
                     <h2>文档问答</h2>
                     <p class="section-desc">
-                        输入你想了解的问题，系统会结合当前选中的 PDF 内容进行回答。
+                        输入你想了解的问题，系统会结合当前选中的 PDF 文本和图表识别结果进行回答。
                     </p>
 
                     <label for="question" class="field-label">你的问题</label>
@@ -98,7 +101,7 @@
                         type="text"
                         id="question"
                         name="question"
-                        placeholder="例如：这份 PDF 的重点是什么？"
+                        placeholder="例如：这篇论文的关键实验图表说明了什么？"
                     >
 
                     <button type="submit" name="action" value="ask" class="secondary-btn">
@@ -110,17 +113,30 @@
             <section class="section-card result-section">
                 <h2>结果展示</h2>
                 <p class="section-desc">
-                    这里会显示 AI 生成的摘要或问答结果。
+                    这里会显示 AI 生成的摘要、图表识别或问答结果。
                 </p>
 
                 <div class="result-box">
                     {% if result_html %}
                         {{ result_html | safe }}
                     {% else %}
-                        <p>上传 PDF 后，摘要和回答会显示在这里。</p>
+                        <p>上传 PDF 后，摘要、图表识别和回答会显示在这里。</p>
                     {% endif %}
                 </div>
             </section>
+
+            {% if visual_summary_html %}
+                <section class="section-card result-section">
+                    <h2>当前文档图表识别</h2>
+                    <p class="section-desc">
+                        这些图表说明会参与后续摘要和问答。
+                    </p>
+
+                    <div class="result-box">
+                        {{ visual_summary_html | safe }}
+                    </div>
+                </section>
+            {% endif %}
         </main>
     </div>
 

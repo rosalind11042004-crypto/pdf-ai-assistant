@@ -1,5 +1,6 @@
 Flask
 pypdf
+PyMuPDF
 openai
 python-dotenv
 markdown

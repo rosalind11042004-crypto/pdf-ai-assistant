@@ -2,6 +2,7 @@ import json
 import os
 import re
 import uuid
+import base64
 from datetime import datetime
 from functools import wraps
 from html import escape
@@ -365,6 +366,10 @@ def is_supabase_table_missing_error(exc):
     )
 
 
+def get_document_select_columns():
+    return "id, user_id, original_filename, storage_path, summary, visual_summary, created_at"
+
+
 def get_user_documents():
     user_id = get_current_user_id()
     if not is_supabase_enabled() or not user_id:
@@ -373,7 +378,7 @@ def get_user_documents():
     try:
         response = (
             supabase_client.table(SUPABASE_TABLE)
-            .select("id, original_filename, storage_path, summary, created_at")
+            .select(get_document_select_columns())
             .eq("user_id", user_id)
             .order("created_at", desc=True)
             .execute()
@@ -400,7 +405,7 @@ def get_user_document(document_id):
     try:
         response = (
             supabase_client.table(SUPABASE_TABLE)
-            .select("id, user_id, original_filename, storage_path, summary, created_at")
+            .select(get_document_select_columns())
             .eq("id", str(document_id))
             .eq("user_id", user_id)
             .limit(1)
@@ -459,6 +464,21 @@ def update_user_document_summary(document_id, summary):
         return True
     except Exception as exc:
         print("[SUPABASE] summary update failed:", exc)
+        return False
+
+
+def update_user_document_visual_summary(document_id, visual_summary):
+    user_id = get_current_user_id()
+    if not is_supabase_enabled() or not user_id:
+        return False
+
+    try:
+        supabase_client.table(SUPABASE_TABLE).update(
+            {"visual_summary": visual_summary}
+        ).eq("id", str(document_id)).eq("user_id", user_id).execute()
+        return True
+    except Exception as exc:
+        print("[SUPABASE] visual summary update failed:", exc)
         return False
 
 
@@ -673,8 +693,177 @@ def call_dashscope(prompt):
         return "\u963f\u91cc\u4e91\u767e\u70bc\u5927\u6a21\u578b\u8c03\u7528\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5 API Key\u3001\u6a21\u578b\u540d\u79f0\u6216\u7f51\u7edc\u8fde\u63a5\u3002"
 
 
-def generate_summary(pdf_text):
+def make_image_data_url(image_bytes, mime_type):
+    encoded_image = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{mime_type};base64,{encoded_image}"
+
+
+def get_image_mime_type(image_ext):
+    ext = (image_ext or "png").lower()
+    if ext in ("jpg", "jpeg"):
+        return "image/jpeg"
+    if ext == "webp":
+        return "image/webp"
+    return "image/png"
+
+
+def extract_pdf_visual_items(pdf_bytes):
+    try:
+        import fitz
+    except ImportError:
+        return [], "当前环境缺少 PyMuPDF，无法进行图表识别。请先安装依赖或在线上环境测试。"
+
+    max_images = int(os.getenv("PDF_VISUAL_MAX_IMAGES", "4"))
+    max_pages = int(os.getenv("PDF_VISUAL_MAX_PAGES", "3"))
+    visual_items = []
+
+    try:
+        pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:
+        return [], "PDF 图像解析失败，请确认文件没有损坏或加密。"
+
+    try:
+        seen_xrefs = set()
+        for page_index in range(min(len(pdf_document), max_pages)):
+            page = pdf_document[page_index]
+            for image_info in page.get_images(full=True):
+                if len(visual_items) >= max_images:
+                    break
+
+                xref = image_info[0]
+                if xref in seen_xrefs:
+                    continue
+                seen_xrefs.add(xref)
+
+                try:
+                    extracted = pdf_document.extract_image(xref)
+                except Exception:
+                    continue
+
+                image_bytes = extracted.get("image")
+                if not image_bytes or len(image_bytes) < 4096:
+                    continue
+
+                image_ext = extracted.get("ext", "png")
+                visual_items.append(
+                    {
+                        "label": f"第 {page_index + 1} 页内嵌图片",
+                        "bytes": image_bytes,
+                        "mime_type": get_image_mime_type(image_ext),
+                    }
+                )
+
+        for page_index in range(min(len(pdf_document), max_pages)):
+            if len(visual_items) >= max_images + max_pages:
+                break
+
+            try:
+                page = pdf_document[page_index]
+                pixmap = page.get_pixmap(matrix=fitz.Matrix(1.6, 1.6), alpha=False)
+                visual_items.append(
+                    {
+                        "label": f"第 {page_index + 1} 页页面截图",
+                        "bytes": pixmap.tobytes("png"),
+                        "mime_type": "image/png",
+                    }
+                )
+            except Exception:
+                continue
+    finally:
+        pdf_document.close()
+
+    if not visual_items:
+        return [], "没有从 PDF 中提取到可用于图表识别的图片或页面截图。"
+
+    return visual_items, None
+
+
+def call_dashscope_vision(prompt, visual_items):
+    if OpenAI is None:
+        return "缺少依赖 openai，请先运行：pip install openai"
+
+    api_key = os.getenv("DASHSCOPE_API_KEY")
+    if not api_key or api_key.startswith("\u8bf7\u5728\u8fd9\u91cc"):
+        return "请先配置阿里云百炼 API Key。"
+
+    client = OpenAI(
+        api_key=api_key,
+        base_url=os.getenv(
+            "DASHSCOPE_BASE_URL",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        ),
+    )
+    model = os.getenv("DASHSCOPE_VISION_MODEL", "qwen-vl-plus")
+
+    content = [{"type": "text", "text": prompt}]
+    for item in visual_items:
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": make_image_data_url(item["bytes"], item["mime_type"])
+                },
+            }
+        )
+
+    try:
+        completion = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是一位擅长学术论文图表解读的中文研究助理。",
+                },
+                {"role": "user", "content": content},
+            ],
+            temperature=0.2,
+        )
+        return completion.choices[0].message.content.strip()
+    except Exception as exc:
+        print("[DASHSCOPE] vision call failed:", exc)
+        return "图表识别调用失败，请检查视觉模型名称、API Key 或网络连接。"
+
+
+def generate_visual_summary(pdf_bytes, pdf_text=""):
+    visual_items, error = extract_pdf_visual_items(pdf_bytes)
+    if error:
+        return error
+
+    item_labels = "\n".join(
+        f"{index}. {item['label']}" for index, item in enumerate(visual_items, start=1)
+    )
+    text_context = (pdf_text or "")[:2500]
+    prompt = f"""
+请识别下面这些来自同一篇 PDF 论文的页面截图/内嵌图片，重点找出关键图表、表格、流程图、模型结构图、实验结果图。
+
+图片来源：
+{item_labels}
+
+请用中文输出，严格包含以下部分：
+## 关键图表清单
+逐条说明每张关键图表可能对应的 Figure/Table、展示对象、坐标轴/列名/模块名称、主要趋势或结论。
+
+## 图表支持的核心论点
+总结这些图表如何支持论文的主要观点、方法或实验结论。
+
+## 可用于问答的图表事实
+列出可以被后续问答引用的具体事实。无法确定的内容请标注“不确定”，不要编造数字。
+
+可参考的论文文字片段：
+{text_context}
+"""
+    return call_dashscope_vision(prompt, visual_items)
+
+
+def build_visual_context(visual_summary):
+    if not visual_summary:
+        return "暂无图表识别结果。"
+    return visual_summary[:4000]
+
+
+def generate_summary(pdf_text, visual_summary=""):
     text_for_summary = pdf_text[:6000]
+    visual_context = build_visual_context(visual_summary)
     prompt = f"""
 \u8bf7\u6839\u636e\u4e0b\u9762\u7684 PDF \u6587\u672c\u751f\u6210\u4e00\u4efd\u9002\u5408\u5b66\u4e60\u8005\u9605\u8bfb\u7684\u7ed3\u6784\u5316\u4e2d\u6587\u5b66\u4e60\u6458\u8981\u3002
 
@@ -682,16 +871,21 @@ def generate_summary(pdf_text):
 1. \u5148\u5224\u65ad\u6587\u6863\u8bed\u8a00\uff0c\u9700\u8981\u652f\u6301\u4e2d\u6587\u3001\u82f1\u6587\u548c\u5fb7\u8bed\u3002
 2. \u5982\u679c\u68c0\u6d4b\u5230\u5fb7\u8bed\u5185\u5bb9\uff0c\u8bf7\u7528\u4e2d\u6587\u89e3\u91ca\u6587\u6863\u5185\u5bb9\uff0c\u5e76\u4fdd\u7559\u91cd\u8981\u5fb7\u8bed\u8bcd\u6c47\u3002
 3. \u4e0d\u8981\u7f16\u9020 PDF \u91cc\u6ca1\u6709\u7684\u4fe1\u606f\u3002
-4. \u8bf7\u4e25\u683c\u6309\u4ee5\u4e0b 5 \u4e2a\u6807\u9898\u8f93\u51fa\uff1a
+4. 如果提供了图表识别结果，请把关键图表、表格、模型结构图和实验结果纳入总结。
+5. \u8bf7\u4e25\u683c\u6309\u4ee5\u4e0b 6 \u4e2a\u6807\u9898\u8f93\u51fa\uff1a
 
 ## \u6587\u6863\u8bed\u8a00\u5224\u65ad
 ## \u4e2d\u6587\u6458\u8981
 ## \u91cd\u70b9\u5185\u5bb9
+## 关键图表与实验结果
 ## \u5173\u952e\u8bcd / \u751f\u8bcd\u89e3\u91ca
 ## \u590d\u4e60\u5efa\u8bae
 
 PDF \u6587\u672c\uff1a
 {text_for_summary}
+
+图表识别结果：
+{visual_context}
 """
     return call_dashscope(prompt)
 
@@ -918,7 +1112,7 @@ def is_summary_or_guide_question(question):
     return any(keyword in lower_question for keyword in guide_keywords)
 
 
-def answer_question(pdf_text, question):
+def answer_question(pdf_text, question, visual_summary=""):
     is_advice_question = is_learning_advice_question(question)
     is_guide_question = is_summary_or_guide_question(question)
     relevant_chunks = find_relevant_chunks(pdf_text, question)
@@ -947,6 +1141,7 @@ def answer_question(pdf_text, question):
 
     document_length = len(pdf_text)
     context_source = "\u524d 6000 \u5b57 fallback \u4e0a\u4e0b\u6587" if used_fallback_context else "\u5173\u952e\u8bcd\u68c0\u7d22\u5230\u7684\u76f8\u5173\u7247\u6bb5"
+    visual_context = build_visual_context(visual_summary)
     prompt = f"""
 \u8bf7\u6839\u636e\u4e0b\u9762\u7684\u201c\u53c2\u8003\u4e0a\u4e0b\u6587\u201d\u56de\u7b54\u7528\u6237\u95ee\u9898\u3002
 
@@ -954,6 +1149,7 @@ def answer_question(pdf_text, question):
 \u6587\u6863\u603b\u5b57\u7b26\u6570\uff08\u7c97\u7565\uff09\uff1a{document_length}
 \u672c\u6b21\u4f7f\u7528\u7684\u53c2\u8003\u7247\u6bb5\u6570\uff1a{len(relevant_chunks)}
 \u4e0a\u4e0b\u6587\u6765\u6e90\uff1a{context_source}
+\u56fe\u8868\u8bc6\u522b\u7ed3\u679c\uff1a{visual_context}
 
 \u8981\u6c42\uff1a
 1. \u4f18\u5148\u7528\u4e2d\u6587\u56de\u7b54\uff0c\u5fc5\u8981\u65f6\u4fdd\u7559\u6587\u6863\u4e2d\u91cd\u8981\u7684\u5fb7\u8bed/\u82f1\u8bed/\u6cd5\u8bed\u5173\u952e\u8bcd\u3002
@@ -964,7 +1160,8 @@ def answer_question(pdf_text, question):
 6. \u5982\u679c\u7528\u6237\u95ee\u201c\u9700\u8981\u591a\u4e45\u590d\u4e60\u5b8c\u201d\u8fd9\u7c7b\u95ee\u9898\uff0c\u8bf7\u53c2\u8003\u6587\u6863\u5b57\u6570/\u957f\u5ea6\u3001\u77e5\u8bc6\u70b9\u6570\u91cf\u3001\u662f\u5426\u9700\u8981\u80cc\u8bf5\u3001\u662f\u5426\u53ea\u662f\u5feb\u901f\u6d4f\u89c8\u3001\u662f\u5426\u8981\u51c6\u5907\u8003\u8bd5\uff0c\u5e76\u7ed9\u51fa\u5206\u6863\u5efa\u8bae\uff1a\u5feb\u901f\u6d4f\u89c8\u3001\u7406\u89e3\u590d\u4e60\u3001\u8003\u524d\u80cc\u8bf5/\u505a\u9898\u3002
 7. \u5982\u679c\u7528\u6237\u95ee\u201c\u4ea4\u901a\u653b\u7565/\u5230\u8fbe\u65b9\u5f0f\u201d\uff0c\u8bf7\u4f18\u5148\u67e5\u627e GETTING TO THE MUSEUM\u3001access\u3001entrance\u3001metro\u3001bus\u3001acc\u00e8s\u3001entr\u00e9e\u3001m\u00e9tro\u3001Anfahrt\u3001Zugang\u3001Eingang \u7b49\u76f8\u5173\u5185\u5bb9\uff0c\u5e76\u6574\u7406\u6210\u4e2d\u6587\u8981\u70b9\u3002
 8. \u4e0d\u8981\u7f16\u9020 PDF \u91cc\u6ca1\u6709\u7684\u4e8b\u5b9e\uff1b\u4f30\u7b97\u548c\u5efa\u8bae\u8981\u660e\u786e\u6807\u6ce8\u4e3a\u4f30\u7b97/\u5efa\u8bae\u3002
-9. \u56de\u7b54\u4e2d\u53ef\u4ee5\u7b80\u77ed\u8bf4\u660e\uff1a\u672c\u6b21\u4f7f\u7528\u4e86 {len(relevant_chunks)} \u4e2a\u53c2\u8003\u7247\u6bb5\u3002
+9. 如果问题涉及图表、实验结果、模型结构、趋势、数值或表格，请优先结合“图表识别结果”回答；不确定的图表细节必须说明不确定。
+10. \u56de\u7b54\u4e2d\u53ef\u4ee5\u7b80\u77ed\u8bf4\u660e\uff1a\u672c\u6b21\u4f7f\u7528\u4e86 {len(relevant_chunks)} \u4e2a\u53c2\u8003\u7247\u6bb5\u3002
 
 \u7528\u6237\u95ee\u9898\uff1a
 {question}
@@ -1027,6 +1224,18 @@ def get_current_pdf_text():
     return read_pdf_text(safe_file_path)
 
 
+def get_current_visual_summary():
+    document_id = session.get("current_document_id")
+    if not document_id:
+        return ""
+
+    document = get_user_document(document_id)
+    if not document:
+        return ""
+
+    return document.get("visual_summary") or ""
+
+
 def render_result_html(result):
     if not result:
         return ""
@@ -1067,6 +1276,9 @@ def render_home(upload_message="", result="", status_code=200):
         render_template(
             "index.html",
             result_html=render_result_html(result),
+            visual_summary_html=render_result_html(
+                current_document.get("visual_summary") if current_document else ""
+            ),
             upload_message=upload_message,
             documents=documents,
             current_document=current_document,
@@ -1193,7 +1405,13 @@ def index():
             if error:
                 return render_home(result=error)
 
-            return render_home(result=answer_question(pdf_text, question))
+            return render_home(
+                result=answer_question(
+                    pdf_text,
+                    question,
+                    get_current_visual_summary(),
+                )
+            )
 
     return render_home()
 
@@ -1281,9 +1499,34 @@ def summarize_document(document_id):
     if error:
         return render_home(result=error, status_code=400)
 
-    summary = generate_summary(pdf_text)
+    summary = generate_summary(pdf_text, document.get("visual_summary") or "")
     update_user_document_summary(document.get("id"), summary)
     return render_home(result=summary)
+
+
+@app.route("/analyze-figures/<document_id>", methods=["POST"])
+@login_required
+def analyze_figures_document(document_id):
+    document = get_user_document(document_id)
+    if not document:
+        return render_home(
+            result=pop_database_error_message("文件不存在或不属于当前用户。"),
+            status_code=404,
+        )
+
+    session["current_document_id"] = document.get("id")
+    session["current_pdf_name"] = document.get("original_filename")
+    pdf_bytes, error = download_pdf_from_storage(document.get("storage_path"))
+    if error:
+        return render_home(result=error, status_code=502)
+
+    pdf_text, text_error = read_pdf_text_from_bytes(pdf_bytes)
+    if text_error:
+        pdf_text = ""
+
+    visual_summary = generate_visual_summary(pdf_bytes, pdf_text)
+    update_user_document_visual_summary(document.get("id"), visual_summary)
+    return render_home(result=visual_summary)
 
 
 @app.route("/delete/<document_id>", methods=["POST"])
