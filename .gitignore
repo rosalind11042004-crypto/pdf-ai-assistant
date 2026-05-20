@@ -1,5 +1,6 @@
 .env
 **pycache**/
 *.pyc
+*.log
 uploads/*
 !uploads/.gitkeep

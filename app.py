@@ -129,6 +129,57 @@ def save_file_index(file_index):
         json.dump(file_index, index_file, ensure_ascii=False, indent=2)
 
 
+def set_current_local_pdf(original_filename, stored_filename, file_path):
+    session["current_pdf_name"] = original_filename
+    session["current_pdf_path"] = file_path
+    session["current_pdf_stored_filename"] = stored_filename
+    session["current_stored_filename"] = stored_filename
+    session["original_filename"] = original_filename
+    session.pop("current_storage_path", None)
+
+
+def set_current_supabase_pdf(original_filename, stored_filename, storage_path):
+    session["current_pdf_name"] = original_filename
+    session["current_stored_filename"] = stored_filename
+    session["current_pdf_stored_filename"] = stored_filename
+    session["current_storage_path"] = storage_path
+    session["original_filename"] = original_filename
+    session.pop("current_pdf_path", None)
+
+
+def clear_current_pdf_session():
+    session.pop("current_pdf_name", None)
+    session.pop("current_pdf_path", None)
+    session.pop("current_pdf_stored_filename", None)
+    session.pop("current_stored_filename", None)
+    session.pop("current_storage_path", None)
+    session.pop("original_filename", None)
+
+
+def save_pdf_locally(original_filename, pdf_bytes=None, file_storage=None):
+    os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+    stored_filename = make_saved_pdf_filename()
+    save_path = os.path.join(get_upload_folder(), stored_filename)
+
+    if pdf_bytes is not None:
+        with open(save_path, "wb") as pdf_file:
+            pdf_file.write(pdf_bytes)
+    else:
+        file_storage.save(save_path)
+
+    file_index = load_file_index()
+    file_index[stored_filename] = {
+        "original_filename": original_filename,
+        "stored_filename": stored_filename,
+        "storage_path": get_storage_path(stored_filename),
+        "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    save_file_index(file_index)
+    set_current_local_pdf(original_filename, stored_filename, save_path)
+
+    return stored_filename, save_path
+
+
 def get_original_filename(stored_filename):
     supabase_record = get_supabase_pdf_record(stored_filename)
     if supabase_record:
@@ -303,7 +354,7 @@ def get_supabase_uploaded_files():
         )
     except Exception as exc:
         print("[SUPABASE] list failed:", exc)
-        return []
+        return None
 
     pdf_files = []
     for file_info in response.data or []:
@@ -322,11 +373,7 @@ def get_supabase_uploaded_files():
     return pdf_files
 
 
-def get_uploaded_files():
-    supabase_files = get_supabase_uploaded_files()
-    if supabase_files is not None:
-        return supabase_files
-
+def get_local_uploaded_files():
     upload_folder = get_upload_folder()
 
     if not os.path.isdir(upload_folder):
@@ -351,6 +398,23 @@ def get_uploaded_files():
             )
 
     return sorted(pdf_files, key=lambda item: item["display_filename"].lower())
+
+
+def get_uploaded_files():
+    local_files = get_local_uploaded_files()
+    supabase_files = get_supabase_uploaded_files()
+
+    if supabase_files is None:
+        return local_files
+
+    merged_files = {file_info["stored_filename"]: file_info for file_info in local_files}
+    for file_info in supabase_files:
+        merged_files[file_info["stored_filename"]] = file_info
+
+    return sorted(
+        merged_files.values(),
+        key=lambda item: item["display_filename"].lower(),
+    )
 
 
 def is_safe_pdf_filename(filename):
@@ -718,6 +782,13 @@ def answer_question(pdf_text, question):
 
 
 def get_current_pdf_text():
+    stored_filename = session.get("current_pdf_stored_filename")
+    local_file_path = get_safe_pdf_path(stored_filename) if stored_filename else None
+
+    if local_file_path:
+        session["current_pdf_path"] = local_file_path
+        return read_pdf_text(local_file_path)
+
     if is_supabase_enabled():
         storage_path = session.get("current_storage_path")
 
@@ -730,7 +801,6 @@ def get_current_pdf_text():
 
         return read_pdf_text_from_bytes(pdf_bytes)
 
-    stored_filename = session.get("current_pdf_stored_filename")
     file_path = get_safe_pdf_path(stored_filename) if stored_filename else session.get("current_pdf_path")
 
     if not file_path:
@@ -797,12 +867,7 @@ def index():
                             session.get("current_stored_filename") == delete_pdf
                             or session.get("current_pdf_stored_filename") == delete_pdf
                         ):
-                            session.pop("current_pdf_name", None)
-                            session.pop("current_pdf_path", None)
-                            session.pop("current_pdf_stored_filename", None)
-                            session.pop("current_stored_filename", None)
-                            session.pop("current_storage_path", None)
-                            session.pop("original_filename", None)
+                            clear_current_pdf_session()
             else:
                 safe_path = get_upload_pdf_path(delete_pdf, must_exist=False)
 
@@ -823,12 +888,7 @@ def index():
                         or session.get("current_pdf_name") == delete_pdf
                         or current_path_name == delete_pdf
                     ):
-                        session.pop("current_pdf_name", None)
-                        session.pop("current_pdf_path", None)
-                        session.pop("current_pdf_stored_filename", None)
-                        session.pop("current_stored_filename", None)
-                        session.pop("current_storage_path", None)
-                        session.pop("original_filename", None)
+                        clear_current_pdf_session()
 
         elif selected_pdf:
             if not is_safe_pdf_filename(selected_pdf):
@@ -836,16 +896,17 @@ def index():
             elif is_supabase_enabled():
                 file_record = get_supabase_pdf_record(selected_pdf)
                 if not file_record:
-                    upload_message = "\u9009\u62e9\u7684 PDF \u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u4e0d\u5408\u6cd5\u3002"
+                    safe_path = get_safe_pdf_path(selected_pdf)
+                    if safe_path:
+                        display_filename = get_original_filename(selected_pdf)
+                        set_current_local_pdf(display_filename, selected_pdf, safe_path)
+                        upload_message = f"\u5f53\u524d\u4f7f\u7528\u672c\u5730\u6587\u6863\uff1a{display_filename}"
+                    else:
+                        upload_message = "\u9009\u62e9\u7684 PDF \u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u4e0d\u5408\u6cd5\u3002"
                 else:
                     display_filename = file_record.get("original_filename") or selected_pdf
                     storage_path = file_record.get("storage_path")
-                    session["current_pdf_name"] = display_filename
-                    session["current_stored_filename"] = selected_pdf
-                    session["current_pdf_stored_filename"] = selected_pdf
-                    session["current_storage_path"] = storage_path
-                    session["original_filename"] = display_filename
-                    session.pop("current_pdf_path", None)
+                    set_current_supabase_pdf(display_filename, selected_pdf, storage_path)
                     upload_message = f"\u5f53\u524d\u4f7f\u7528\u6587\u6863\uff1a{display_filename}"
             else:
                 safe_path = get_safe_pdf_path(selected_pdf)
@@ -854,12 +915,7 @@ def index():
                     upload_message = "\u9009\u62e9\u7684 PDF \u6587\u4ef6\u4e0d\u5b58\u5728\u6216\u4e0d\u5408\u6cd5\u3002"
                 else:
                     display_filename = get_original_filename(selected_pdf)
-                    session["current_pdf_name"] = display_filename
-                    session["current_pdf_path"] = safe_path
-                    session["current_pdf_stored_filename"] = selected_pdf
-                    session["current_stored_filename"] = selected_pdf
-                    session["original_filename"] = display_filename
-                    session.pop("current_storage_path", None)
+                    set_current_local_pdf(display_filename, selected_pdf, safe_path)
                     upload_message = f"\u5f53\u524d\u4f7f\u7528\u6587\u6863\uff1a{display_filename}"
 
         elif action == "upload":
@@ -875,7 +931,11 @@ def index():
 
                 storage_saved, storage_error = upload_pdf_to_storage(storage_path, pdf_bytes)
                 if not storage_saved:
-                    upload_message = f"Storage \u4e0a\u4f20\u5931\u8d25\uff1a{storage_error}"
+                    save_pdf_locally(original_filename, pdf_bytes=pdf_bytes)
+                    upload_message = (
+                        f"Supabase Storage \u4e0a\u4f20\u5931\u8d25\uff0c"
+                        f"\u5df2\u6539\u4e3a\u672c\u5730\u4fdd\u5b58\uff1a{original_filename}"
+                    )
                 else:
                     supabase_saved, supabase_error = insert_supabase_pdf_record(
                         original_filename, stored_filename, storage_path
@@ -883,35 +943,17 @@ def index():
 
                     if not supabase_saved:
                         delete_pdf_from_storage(storage_path)
-                        upload_message = f"Supabase \u5143\u6570\u636e\u5199\u5165\u5931\u8d25\uff1a{supabase_error}"
+                        save_pdf_locally(original_filename, pdf_bytes=pdf_bytes)
+                        upload_message = (
+                            f"Supabase \u5143\u6570\u636e\u5199\u5165\u5931\u8d25\uff0c"
+                            f"\u5df2\u6539\u4e3a\u672c\u5730\u4fdd\u5b58\uff1a{original_filename}"
+                        )
                     else:
-                        session["current_pdf_name"] = original_filename
-                        session["current_stored_filename"] = stored_filename
-                        session["current_pdf_stored_filename"] = stored_filename
-                        session["current_storage_path"] = storage_path
-                        session["original_filename"] = original_filename
-                        session.pop("current_pdf_path", None)
+                        set_current_supabase_pdf(original_filename, stored_filename, storage_path)
                         upload_message = f"PDF \u4e0a\u4f20\u6210\u529f\uff1a{original_filename}"
             else:
-                os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
                 original_filename = pdf_file.filename.replace("\\", "/").split("/")[-1]
-                stored_filename = make_saved_pdf_filename()
-                save_path = os.path.join(get_upload_folder(), stored_filename)
-                pdf_file.save(save_path)
-                file_index = load_file_index()
-                file_index[stored_filename] = {
-                    "original_filename": original_filename,
-                    "stored_filename": stored_filename,
-                    "storage_path": get_storage_path(stored_filename),
-                    "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                }
-                save_file_index(file_index)
-                session["current_pdf_name"] = original_filename
-                session["current_pdf_path"] = save_path
-                session["current_pdf_stored_filename"] = stored_filename
-                session["current_stored_filename"] = stored_filename
-                session["original_filename"] = original_filename
-                session.pop("current_storage_path", None)
+                save_pdf_locally(original_filename, file_storage=pdf_file)
                 upload_message = f"PDF \u4e0a\u4f20\u6210\u529f\uff1a{original_filename}"
 
         elif action == "summary":
